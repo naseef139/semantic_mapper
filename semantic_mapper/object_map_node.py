@@ -1,5 +1,7 @@
 """Object map: merges repeated detections into single map objects."""
 from collections import Counter
+import json
+import os
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -19,7 +21,13 @@ class ObjectMapNode(Node):
         self.min_gap = self.declare_parameter('min_gap', 1.0).value              # seconds between counted sightings
         self.objects = []
         self.people_seen = 0
-        self.next_id = 0        
+        self.next_id = 0
+        self.save_path = os.path.expanduser(
+            self.declare_parameter('save_path', '~/mallbot_ws/object_map.json').value)
+        load_path = os.path.expanduser(self.declare_parameter('load_path', '').value)
+        if load_path:
+            self.load_map(load_path)
+        self.create_timer(5.0, self.save_map)                
         self.create_subscription(Detection3DArray, '/semantic_mapper/detections', self.det_cb, 10)
         self.pub = self.create_publisher(MarkerArray, '/semantic_mapper/object_map', 10)
         self.create_timer(1.0, self.publish_markers)
@@ -93,7 +101,27 @@ class ObjectMapNode(Node):
                 else:
                     j += 1
             i += 1
-            
+
+    def save_map(self):
+        data = {'frame': 'map', 'objects': [
+            {'id': o['id'], 'label': self.label_of(o),
+             'x': round(float(o['pos'][0]), 3), 'y': round(float(o['pos'][1]), 3), 'z': round(float(o['pos'][2]), 3),
+             'sightings': o['n'], 'confirmed': o['confirmed'],
+             'votes': {k: round(v, 2) for k, v in o['votes'].items()}}
+            for o in self.objects]}
+        with open(self.save_path, 'w') as f:
+            json.dump(data, f, indent=2)
+
+    def load_map(self, path):
+        with open(path) as f:
+            data = json.load(f)
+        for d in data['objects']:
+            self.objects.append(dict(id=d['id'], pos=np.array([d['x'], d['y'], d['z']]),
+                                     updates=d['sightings'], n=d['sightings'],
+                                     votes=Counter(d['votes']), last_t=0.0, confirmed=d['confirmed']))
+            self.next_id = max(self.next_id, d['id'])
+        self.get_logger().info(f'loaded {len(self.objects)} objects from {path}')
+                    
     def publish_markers(self):
         arr = MarkerArray()
         clear = Marker()
