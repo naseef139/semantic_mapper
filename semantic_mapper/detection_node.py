@@ -5,6 +5,11 @@ from cv_bridge import CvBridge
 import message_filters
 import numpy as np
 from ultralytics import YOLOWorld
+from rclpy.duration import Duration
+from geometry_msgs.msg import PointStamped
+from visualization_msgs.msg import Marker, MarkerArray
+from tf2_ros import Buffer, TransformListener
+import tf2_geometry_msgs   # lets tf2 transform PointStamped messages
 
 CLASSES = ['bench', 'chair', 'table', 'potted plant', 'trash can', 'sign',
            'fire extinguisher', 'vending machine', 'person']
@@ -49,7 +54,9 @@ class DetectionNode(Node):
         self.model = YOLOWorld('yolov8s-worldv2.pt')
         self.model.set_classes(CLASSES)
         self.get_logger().info(f'YOLO-World ready, classes: {CLASSES}')
-        
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.marker_pub = self.create_publisher(MarkerArray, '/semantic_mapper/markers', 10)        
         # camera_info: needed once
         self.create_subscription(CameraInfo, '/camera/camera_info', self.info_cb, 10)
 
@@ -88,6 +95,11 @@ class DetectionNode(Node):
         if len(result.boxes) == 0:
             self.get_logger().info('no objects')
             return
+            
+        markers = MarkerArray()
+        clear = Marker()
+        clear.action = Marker.DELETEALL          # remove last frame's markers
+        markers.markers.append(clear)            
         for box in result.boxes:
             name = CLASSES[int(box.cls[0])]
             conf = float(box.conf[0])
@@ -100,10 +112,41 @@ class DetectionNode(Node):
             u, v = (x1 + x2) / 2.0, (y1 + y2) / 2.0          # box centre
             X, Y, Z = back_project(u, v, z, self.K)
             dist = float(np.sqrt(X * X + Y * Y + Z * Z))      # straight-line distance
+            # camera frame -> map frame
+            p_cam = PointStamped()
+            p_cam.header = rgb_msg.header            # frame = camera_optical_frame, time = image time
+            p_cam.point.x, p_cam.point.y, p_cam.point.z = float(X), float(Y), float(Z)
+            try:
+                p_map = self.tf_buffer.transform(p_cam, 'map', timeout=Duration(seconds=0.2))
+            except Exception as e:
+                self.get_logger().warn(f'no transform to map yet: {e}')
+                continue
+            mx, my, mz = p_map.point.x, p_map.point.y, p_map.point.z
             self.get_logger().info(
-                f'{name:18s} conf={conf:.2f}  pixel=({u:.0f},{v:.0f})  '
-                f'cam XYZ=({X:+.2f}, {Y:+.2f}, {Z:+.2f}) m  dist={dist:.2f} m')
-                
+                f'{name:18s} conf={conf:.2f}  cam=({X:+.2f}, {Y:+.2f}, {Z:+.2f})  '
+                f'map=({mx:+.2f}, {my:+.2f}, {mz:+.2f})  dist={dist:.2f} m')
+
+            # a red ball on the object and its name above it
+            for kind in (Marker.SPHERE, Marker.TEXT_VIEW_FACING):
+                m = Marker()
+                m.header.frame_id = 'map'
+                m.header.stamp = rgb_msg.header.stamp
+                m.ns = 'detections'
+                m.id = len(markers.markers)
+                m.type = kind
+                m.action = Marker.ADD
+                m.pose.position.x, m.pose.position.y, m.pose.position.z = mx, my, mz
+                m.pose.orientation.w = 1.0
+                m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.1, 0.1, 1.0
+                if kind == Marker.SPHERE:
+                    m.scale.x = m.scale.y = m.scale.z = 0.3
+                else:
+                    m.pose.position.z = mz + 0.5
+                    m.scale.z = 0.35
+                    m.color.r = m.color.g = m.color.b = 1.0
+                    m.text = f'{name} {conf:.2f}'
+                markers.markers.append(m)
+                self.marker_pub.publish(markers)
 
 def main():
     rclpy.init()
