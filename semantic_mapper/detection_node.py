@@ -30,6 +30,15 @@ def box_depth(depth, x1, y1, x2, y2, shrink=0.2, bin_size=0.1, min_share=0.15):
             return float(np.median(near))
     return float(np.median(vals))
     
+
+def back_project(u, v, z, K):
+    """Pixel (u, v) with depth z -> point (X, Y, Z) in the camera optical frame."""
+    fx, fy, cx, cy = K
+    X = (u - cx) * z / fx
+    Y = (v - cy) * z / fy
+    return X, Y, z
+    
+
 class DetectionNode(Node):
     def __init__(self):
         super().__init__('detection_node')
@@ -72,7 +81,9 @@ class DetectionNode(Node):
         pct = 100.0 * valid.mean()
         nearest = float(depth[valid].min()) if valid.any() else float('nan')
         median = float(np.median(depth[valid])) if valid.any() else float('nan')
-                       
+        if self.K is None:
+            return
+                                   
         result = self.model.predict(rgb, conf=0.25, verbose=False)[0]
         if len(result.boxes) == 0:
             self.get_logger().info('no objects')
@@ -85,9 +96,13 @@ class DetectionNode(Node):
             if z is None:
                 self.get_logger().info(f'{name:18s} conf={conf:.2f}  no valid depth, skipped')
                 continue
-            mean = float(np.mean(depth[y1:y2, x1:x2][np.isfinite(depth[y1:y2, x1:x2])]))
+
+            u, v = (x1 + x2) / 2.0, (y1 + y2) / 2.0          # box centre
+            X, Y, Z = back_project(u, v, z, self.K)
+            dist = float(np.sqrt(X * X + Y * Y + Z * Z))      # straight-line distance
             self.get_logger().info(
-                f'{name:18s} conf={conf:.2f}  depth={z:.2f} m  (plain average would say {mean:.2f} m)')
+                f'{name:18s} conf={conf:.2f}  pixel=({u:.0f},{v:.0f})  '
+                f'cam XYZ=({X:+.2f}, {Y:+.2f}, {Z:+.2f}) m  dist={dist:.2f} m')
                 
 
 def main():
