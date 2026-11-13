@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'detection_node = semantic_mapper.detection_node:main',
+            'prompt_test = semantic_mapper.prompt_test:main',
         ],
     },
 )

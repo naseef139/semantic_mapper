@@ -12,10 +12,14 @@ from tf2_ros import Buffer, TransformListener
 import tf2_geometry_msgs   # lets tf2 transform PointStamped messages
 from vision_msgs.msg import Detection3D, Detection3DArray, ObjectHypothesisWithPose
 
-CLASSES = ['bench', 'chair', 'table', 'potted plant', 'trash can', 'sign',
-           'fire extinguisher', 'vending machine', 'person']
+# words given to the detector (chosen by the prompt test on our mall)
+WORDS = ['bench', 'garbage bin', 'desk', 'potted plant', 'bush', 'flower pot',
+         'signboard', 'person']
+# detector word -> name stored on the map
+LABEL = {'garbage bin': 'bin', 'desk': 'table', 'bush': 'potted plant',
+         'flower pot': 'potted plant', 'signboard': 'sign'}
 
-def box_depth(depth, x1, y1, x2, y2, shrink=0.2, bin_size=0.1, min_share=0.15):
+def box_depth(depth, x1, y1, x2, y2, shrink=0.2, bin_size=0.1, min_share=0.06):
     """Nearest-mode depth (metres) of the object inside a box, or None."""
     # 1. middle part of the box
     dx, dy = int((x2 - x1) * shrink), int((y2 - y1) * shrink)
@@ -52,16 +56,20 @@ class DetectionNode(Node):
         self.K = None            # fx, fy, cx, cy once we have them
         self.last_print = 0.0
         
-        self.model = YOLOWorld('yolov8s-worldv2.pt')
-        self.model.set_classes(CLASSES)
-        self.get_logger().info(f'YOLO-World ready, classes: {CLASSES}')
+        self.declare_parameter('model', 'yolov8l-worldv2.pt')
+        self.model = YOLOWorld(self.get_parameter('model').value)
+        self.model.set_classes(WORDS)
+        self.get_logger().info(f'YOLO-World ready, words: {WORDS}')
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.marker_pub = self.create_publisher(MarkerArray, '/semantic_mapper/markers', 10)        
         self.det_pub = self.create_publisher(Detection3DArray, '/semantic_mapper/detections', 10)
         self.declare_parameter('max_range', 8.0)
         self.max_range = self.get_parameter('max_range').value       
-       
+        self.declare_parameter('conf', 0.20)
+        self.conf = self.get_parameter('conf').value
+        self.annot_pub = self.create_publisher(Image, '/semantic_mapper/annotated', 10)
+               
         # camera_info: needed once
         self.create_subscription(CameraInfo, '/camera/camera_info', self.info_cb, 10)
 
@@ -96,7 +104,11 @@ class DetectionNode(Node):
         if self.K is None:
             return
                                    
-        result = self.model.predict(rgb, conf=0.25, verbose=False)[0]
+        bgr = np.ascontiguousarray(rgb[:, :, ::-1])          # the detector expects blue-green-red
+        result = self.model.predict(bgr, conf=self.conf, verbose=False)[0]
+        annot = self.bridge.cv2_to_imgmsg(result.plot(), encoding='bgr8')
+        annot.header = rgb_msg.header
+        self.annot_pub.publish(annot)
         if len(result.boxes) == 0:
             self.get_logger().info('no objects')
             return
@@ -109,7 +121,8 @@ class DetectionNode(Node):
         clear.action = Marker.DELETEALL          # remove last frame's markers
         markers.markers.append(clear)            
         for box in result.boxes:
-            name = CLASSES[int(box.cls[0])]
+            word = WORDS[int(box.cls[0])]
+            name = LABEL.get(word, word)
             conf = float(box.conf[0])
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0]]
             z = box_depth(depth, x1, y1, x2, y2)
@@ -128,10 +141,14 @@ class DetectionNode(Node):
             p_cam.header = rgb_msg.header            # frame = camera_optical_frame, time = image time
             p_cam.point.x, p_cam.point.y, p_cam.point.z = float(X), float(Y), float(Z)
             try:
-                p_map = self.tf_buffer.transform(p_cam, 'map', timeout=Duration(seconds=0.2))
-            except Exception as e:
-                self.get_logger().warn(f'no transform to map yet: {e}')
-                continue
+                p_map = self.tf_buffer.transform(p_cam, 'map')
+            except Exception:
+                try:
+                    p_cam.header.stamp = rclpy.time.Time().to_msg()     # use the newest transform
+                    p_map = self.tf_buffer.transform(p_cam, 'map')
+                except Exception as e:
+                    self.get_logger().warn(f'no transform to map yet: {e}')
+                    continue
             mx, my, mz = p_map.point.x, p_map.point.y, p_map.point.z
             self.get_logger().info(
                 f'{name:18s} conf={conf:.2f}  cam=({X:+.2f}, {Y:+.2f}, {Z:+.2f})  '
