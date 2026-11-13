@@ -10,6 +10,7 @@ from geometry_msgs.msg import PointStamped
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import Buffer, TransformListener
 import tf2_geometry_msgs   # lets tf2 transform PointStamped messages
+from vision_msgs.msg import Detection3D, Detection3DArray, ObjectHypothesisWithPose
 
 CLASSES = ['bench', 'chair', 'table', 'potted plant', 'trash can', 'sign',
            'fire extinguisher', 'vending machine', 'person']
@@ -57,6 +58,10 @@ class DetectionNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.marker_pub = self.create_publisher(MarkerArray, '/semantic_mapper/markers', 10)        
+        self.det_pub = self.create_publisher(Detection3DArray, '/semantic_mapper/detections', 10)
+        self.declare_parameter('max_range', 8.0)
+        self.max_range = self.get_parameter('max_range').value       
+       
         # camera_info: needed once
         self.create_subscription(CameraInfo, '/camera/camera_info', self.info_cb, 10)
 
@@ -95,7 +100,10 @@ class DetectionNode(Node):
         if len(result.boxes) == 0:
             self.get_logger().info('no objects')
             return
-            
+
+        dets = Detection3DArray()
+        dets.header.frame_id = 'map'
+        dets.header.stamp = rgb_msg.header.stamp            
         markers = MarkerArray()
         clear = Marker()
         clear.action = Marker.DELETEALL          # remove last frame's markers
@@ -112,6 +120,9 @@ class DetectionNode(Node):
             u, v = (x1 + x2) / 2.0, (y1 + y2) / 2.0          # box centre
             X, Y, Z = back_project(u, v, z, self.K)
             dist = float(np.sqrt(X * X + Y * Y + Z * Z))      # straight-line distance
+            if dist > self.max_range:
+                self.get_logger().info(f'{name:18s} conf={conf:.2f}  {dist:.1f} m away, beyond max range')
+                continue
             # camera frame -> map frame
             p_cam = PointStamped()
             p_cam.header = rgb_msg.header            # frame = camera_optical_frame, time = image time
@@ -126,6 +137,21 @@ class DetectionNode(Node):
                 f'{name:18s} conf={conf:.2f}  cam=({X:+.2f}, {Y:+.2f}, {Z:+.2f})  '
                 f'map=({mx:+.2f}, {my:+.2f}, {mz:+.2f})  dist={dist:.2f} m')
 
+            det = Detection3D()
+            det.header = dets.header
+            hyp = ObjectHypothesisWithPose()
+            hyp.hypothesis.class_id = name
+            hyp.hypothesis.score = conf
+            hyp.pose.pose.position.x, hyp.pose.pose.position.y, hyp.pose.pose.position.z = mx, my, mz
+            hyp.pose.pose.orientation.w = 1.0
+            det.results.append(hyp)
+            det.bbox.center.position.x, det.bbox.center.position.y, det.bbox.center.position.z = mx, my, mz
+            det.bbox.center.orientation.w = 1.0
+            det.bbox.size.x = float((x2 - x1) * z / self.K[0])    # width in metres
+            det.bbox.size.y = det.bbox.size.x                     # depth unknown: assume as deep as wide
+            det.bbox.size.z = float((y2 - y1) * z / self.K[1])    # height in metres
+            dets.detections.append(det)
+            
             # a red ball on the object and its name above it
             for kind in (Marker.SPHERE, Marker.TEXT_VIEW_FACING):
                 m = Marker()
@@ -147,7 +173,8 @@ class DetectionNode(Node):
                     m.text = f'{name} {conf:.2f}'
                 markers.markers.append(m)
                 self.marker_pub.publish(markers)
-
+                self.det_pub.publish(dets)
+        
 def main():
     rclpy.init()
     rclpy.spin(DetectionNode())
