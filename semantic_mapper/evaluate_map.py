@@ -79,3 +79,10 @@ def main():
             print(f'  #{o["id"]} {o["label"]} at ({o["x"]:.2f}, {o["y"]:.2f})  -> nearest real thing: {near["name"]} ({d:.2f} m away)')
     stored_people = sum(o['label'] == 'person' for o in objs)
     print(f'people in the world: {len(people)}, stored on the map: {stored_people}')
+    signs = [(objs[i], truth[j]) for i, (j, d) in match.items() if objs[i]['label'] == 'sign']
+    right = sum(o.get('text', '').lower() == t['name'].replace('sign_', '') for o, t in signs)
+    print(f'\nsign names read correctly: {right}/{sum(t["label"] == "sign" for t in truth)}')
+    for o, t in sorted(signs, key=lambda s: s[1]['name']):
+        print(f'  {t["name"]:18s} read as "{o.get("text", "")}"')    
+    
+    

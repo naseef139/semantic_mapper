@@ -12,6 +12,13 @@ MOVING = {'person'}          # detected, but never stored on the map
 # long objects: the box centre shifts with the viewpoint, so allow a larger distance (m)
 MERGE_DIST = {'sign': 2.5, 'bench': 1.8}
 
+
+# general English word list (knows nothing about this mall); used only as a bonus in the text vote
+try:
+    ENGLISH = {w.strip().upper() for w in open('/usr/share/dict/words') if w.strip().isalpha()}
+except OSError:
+    ENGLISH = set()
+    
 class ObjectMapNode(Node):
     def __init__(self):
         super().__init__('object_map_node')
@@ -38,6 +45,16 @@ class ObjectMapNode(Node):
     def label_of(obj):
         return obj['votes'].most_common(1)[0][0]         # class vote: the label with the most weight
 
+
+    @staticmethod
+    def text_of(obj):
+        if not obj['texts']:
+            return ''
+        def score(item):                                   # longer, repeated, real words win
+            text, count = item
+            return count * len(text) ** 2 * (3 if text in ENGLISH else 1)
+        return max(obj['texts'].items(), key=score)[0]
+        
     def find_match(self, label, pos):
         best, best_d = None, 1e9
         for obj in self.objects:
@@ -54,7 +71,8 @@ class ObjectMapNode(Node):
             label, conf = hyp.class_id, hyp.score
             c = det.bbox.center.position
             pos = np.array([c.x, c.y, c.z])
-
+            text = det.id
+            
             if label in MOVING:
                 self.people_seen += 1
                 for p in self.people:                       # remember where people stand
@@ -73,13 +91,16 @@ class ObjectMapNode(Node):
             if obj is None:                                # first time we see it: a candidate
                 self.next_id += 1
                 self.objects.append(dict(id=self.next_id, pos=pos, updates=1, n=1,
-                                         votes=Counter({label: conf}), last_t=t, confirmed=False))
+                                         votes=Counter({label: conf}), last_t=t, confirmed=False,
+                                         texts=Counter({text: 1} if text else {})))
                 self.get_logger().info(f'candidate #{self.next_id}: {label} at ({pos[0]:.2f}, {pos[1]:.2f})')
                 continue
 
             obj['updates'] += 1
             obj['pos'] += (pos - obj['pos']) / obj['updates']       # running average of the position
             obj['votes'][label] += conf                             # class vote, weighted by confidence
+            if text:
+                obj['texts'][text] += 1                             # text vote            
             if t - obj['last_t'] >= self.min_gap:                   # count only sightings spread over time
                 obj['n'] += 1
                 obj['last_t'] = t
@@ -122,6 +143,7 @@ class ObjectMapNode(Node):
                     a['updates'] = w
                     a['n'] += b['n']
                     a['votes'] += b['votes']
+                    a['texts'] += b['texts']                    
                     a['confirmed'] = a['confirmed'] or b['confirmed'] or a['n'] >= self.min_sightings
                     self.get_logger().info(f'fused #{b["id"]} into #{a["id"]} ({la})')
                     del self.objects[j]
@@ -134,6 +156,7 @@ class ObjectMapNode(Node):
             {'id': o['id'], 'label': self.label_of(o),
              'x': round(float(o['pos'][0]), 3), 'y': round(float(o['pos'][1]), 3), 'z': round(float(o['pos'][2]), 3),
              'sightings': o['n'], 'confirmed': o['confirmed'],
+             'text': self.text_of(o), 'texts': dict(o['texts']),
              'votes': {k: round(v, 2) for k, v in o['votes'].items()}}
             for o in self.objects]}
         with open(self.save_path, 'w') as f:
@@ -145,7 +168,8 @@ class ObjectMapNode(Node):
         for d in data['objects']:
             self.objects.append(dict(id=d['id'], pos=np.array([d['x'], d['y'], d['z']]),
                                      updates=d['sightings'], n=d['sightings'],
-                                     votes=Counter(d['votes']), last_t=0.0, confirmed=d['confirmed']))
+                                     votes=Counter(d['votes']), last_t=0.0, confirmed=d['confirmed'],
+                                     texts=Counter(d.get('texts', {}))))
             self.next_id = max(self.next_id, d['id'])
         self.get_logger().info(f'loaded {len(self.objects)} objects from {path}')
                     
@@ -179,7 +203,8 @@ class ObjectMapNode(Node):
                     m.pose.position.z = float(p[2]) + 0.5
                     m.scale.z = 0.35
                     m.color.r = m.color.g = m.color.b = m.color.a = 1.0
-                    m.text = f'{self.label_of(obj)} x{obj["n"]}'
+                    shown = self.text_of(obj) or self.label_of(obj)
+                    m.text = f'{shown} x{obj["n"]}'
                 arr.markers.append(m)
         self.pub.publish(arr)
 

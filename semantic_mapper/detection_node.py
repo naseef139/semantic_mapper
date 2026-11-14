@@ -4,6 +4,10 @@ from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 import message_filters
 import numpy as np
+import cv2
+import easyocr
+
+
 from ultralytics import YOLOWorld
 from rclpy.duration import Duration
 from geometry_msgs.msg import PointStamped
@@ -60,6 +64,8 @@ class DetectionNode(Node):
         self.model = YOLOWorld(self.get_parameter('model').value)
         self.model.set_classes(WORDS)
         self.get_logger().info(f'YOLO-World ready, words: {WORDS}')
+        self.ocr = easyocr.Reader(['en'])
+        self.get_logger().info('EasyOCR ready')        
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.marker_pub = self.create_publisher(MarkerArray, '/semantic_mapper/markers', 10)        
@@ -80,6 +86,18 @@ class DetectionNode(Node):
             [rgb_sub, depth_sub], queue_size=10, slop=0.05)
         self.sync.registerCallback(self.frame_cb)
 
+    def read_sign(self, rgb, x1, y1, x2, y2):
+        """Read the text on a detected sign. Returns '' if nothing is read confidently."""
+        h, w = rgb.shape[:2]
+        pad = 6
+        crop = rgb[max(0, y1 - pad):min(h, y2 + pad), max(0, x1 - pad):min(w, x2 + pad)]
+        if crop.size == 0:
+            return ''
+        crop = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)   # small letters read better enlarged
+        results = self.ocr.readtext(crop, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+        results = [(t, c) for _, t, c in results if c >= 0.5 and len(t) >= 3]
+        return max(results, key=lambda r: r[1])[0] if results else ''
+        
     def info_cb(self, msg):
         if self.K is None:
             self.K = (msg.k[0], msg.k[4], msg.k[2], msg.k[5])   # fx, fy, cx, cy
@@ -125,6 +143,9 @@ class DetectionNode(Node):
             name = LABEL.get(word, word)
             conf = float(box.conf[0])
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0]]
+            text = self.read_sign(rgb, x1, y1, x2, y2) if name == 'sign' else ''
+            if text:
+                self.get_logger().info(f'  sign text read: "{text}"')            
             z = box_depth(depth, x1, y1, x2, y2)
             if z is None:
                 self.get_logger().info(f'{name:18s} conf={conf:.2f}  no valid depth, skipped')
@@ -155,6 +176,7 @@ class DetectionNode(Node):
                 f'map=({mx:+.2f}, {my:+.2f}, {mz:+.2f})  dist={dist:.2f} m')
 
             det = Detection3D()
+            det.id = text            
             det.header = dets.header
             hyp = ObjectHypothesisWithPose()
             hyp.hypothesis.class_id = name
