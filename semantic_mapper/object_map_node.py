@@ -22,6 +22,8 @@ class ObjectMapNode(Node):
         self.objects = []
         self.people_seen = 0
         self.next_id = 0
+        self.people = []                 # places where people were seen: position and count
+        self.person_radius = self.declare_parameter('person_radius', 0.8).value        
         self.save_path = os.path.expanduser(
             self.declare_parameter('save_path', '~/mallbot_ws/object_map.json').value)
         load_path = os.path.expanduser(self.declare_parameter('load_path', '').value)
@@ -55,6 +57,16 @@ class ObjectMapNode(Node):
 
             if label in MOVING:
                 self.people_seen += 1
+                for p in self.people:                       # remember where people stand
+                    if np.linalg.norm(pos[:2] - p['pos'][:2]) < 1.0:
+                        p['n'] += 1
+                        p['pos'] += (pos - p['pos']) / p['n']
+                        break
+                else:
+                    self.people.append(dict(pos=pos.copy(), n=1))
+                continue
+
+            if self.at_person(pos):                         # do not start an object where a person stands
                 continue
 
             obj = self.find_match(label, pos)
@@ -78,7 +90,22 @@ class ObjectMapNode(Node):
                     f'CONFIRMED #{obj["id"]}: {self.label_of(obj)} at ({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}) '
                     f'after {obj["n"]} sightings')
         self.fuse_close()
+        self.drop_people_objects()
         
+    def at_person(self, pos):
+        """True if people were seen repeatedly at this spot (and pos is not high up, like a sign)."""
+        if pos[2] > 1.5:
+            return False
+        return any(p['n'] >= 3 and np.linalg.norm(pos[:2] - p['pos'][:2]) < self.person_radius
+                   for p in self.people)
+
+    def drop_people_objects(self):
+        """Remove objects that were stored before we knew a person stands there."""
+        for obj in list(self.objects):
+            if self.at_person(obj['pos']):
+                self.get_logger().info(f'removed #{obj["id"]} {self.label_of(obj)}: a person stands there')
+                self.objects.remove(obj)
+                        
     def fuse_close(self):
         """Join stored objects of the same label that have ended up close together."""
         i = 0
