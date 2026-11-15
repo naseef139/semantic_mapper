@@ -17,11 +17,9 @@ import tf2_geometry_msgs   # lets tf2 transform PointStamped messages
 from vision_msgs.msg import Detection3D, Detection3DArray, ObjectHypothesisWithPose
 
 # words given to the detector (chosen by the prompt test on our mall)
-WORDS = ['bench', 'garbage bin', 'desk', 'potted plant', 'bush', 'flower pot',
-         'signboard', 'person']
+WORDS = ['bench', 'garbage bin', 'desk', 'potted tree', 'signboard', 'person']
 # detector word -> name stored on the map
-LABEL = {'garbage bin': 'bin', 'desk': 'table', 'bush': 'potted plant',
-         'flower pot': 'potted plant', 'signboard': 'sign'}
+LABEL = {'garbage bin': 'bin', 'desk': 'table', 'potted tree': 'potted plant', 'signboard': 'sign'}
 
 def box_depth(depth, x1, y1, x2, y2, shrink=0.2, bin_size=0.1, min_share=0.06):
     """Nearest-mode depth (metres) of the object inside a box, or None."""
@@ -95,8 +93,9 @@ class DetectionNode(Node):
             return ''
         crop = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)   # small letters read better enlarged
         results = self.ocr.readtext(crop, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ')
-        results = [(t, c) for _, t, c in results if c >= 0.5 and len(t) >= 3]
-        return max(results, key=lambda r: r[1])[0] if results else ''
+        pieces = [(box[0][0], t) for box, t, c in results if c >= 0.3 and len(t) >= 2]
+        text = ''.join(t for _, t in sorted(pieces))        # join the pieces from left to right
+        return text if len(text) >= 3 else ''
         
     def info_cb(self, msg):
         if self.K is None:
