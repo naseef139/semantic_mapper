@@ -16,7 +16,7 @@ MATCH_DIST = 1.5          # a map object counts as found if within this distance
 def read_truth(sdf_path, sx, sy, syaw):
     text = open(sdf_path).read()
     found = re.findall(r'<model name="([^"]+)">.*?<pose>([^<]+)</pose>', text, flags=re.S)
-    found += [(n, p) for n, p in re.findall(r'<name>([^<]+)</name>.*?<pose>([^<]+)</pose>', text, flags=re.S)]
+    found += re.findall(r'<include>.*?<name>([^<]+)</name>.*?<pose>([^<]+)</pose>.*?</include>', text, flags=re.S)
     truth = []
     for name, pose in found:
         for pattern, label in TRUTH_NAMES:
