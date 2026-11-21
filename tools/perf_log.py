@@ -3,16 +3,18 @@
 
   python3 perf_log.py OUT.csv RUN.log [duration_s=300] [period_s=10]
 
-Columns: wall_s, sim_s, rtf (= d sim / d wall over the period, from Gazebo /stats),
+Columns: wall_s, sim_s, rtf (= d sim / d wall over the period, from ROS /clock),
 CPU % per process group (100 = one core), total CPU % of the machine, explorer goals so far.
 """
 import csv
 import re
-import subprocess
 import sys
 import time
 
 import psutil
+import rclpy
+from rclpy.qos import qos_profile_sensor_data
+from rosgraph_msgs.msg import Clock
 
 GROUPS = {   # column -> substring of the process command line
     'gazebo': 'ign gazebo',
@@ -29,15 +31,23 @@ GROUPS = {   # column -> substring of the process command line
 }
 
 
+_node = None
+
+
 def sim_time():
-    """Gazebo sim time (s) from one /stats message, or None."""
-    try:
-        out = subprocess.run(['ign', 'topic', '-e', '-t', '/stats', '-n', '1'],
-                             capture_output=True, text=True, timeout=5).stdout
-    except subprocess.TimeoutExpired:
-        return None
-    m = re.search(r'sim_time\s*\{\s*sec:\s*(\d+)(?:\s*nsec:\s*(\d+))?', out)
-    return int(m.group(1)) + int(m.group(2) or 0) * 1e-9 if m else None
+    """Sim time (s) from one ROS /clock message, or None.
+    (Was `ign topic -e -t /stats -n 1`: a Ruby process at ~124% CPU for up to 5 s per sample.)"""
+    global _node
+    if _node is None:
+        rclpy.init()
+        _node = rclpy.create_node('perf_log')
+    got = []
+    sub = _node.create_subscription(Clock, '/clock', got.append, qos_profile_sensor_data)
+    end = time.time() + 2.0
+    while not got and time.time() < end:
+        rclpy.spin_once(_node, timeout_sec=0.1)
+    _node.destroy_subscription(sub)
+    return got[0].clock.sec + got[0].clock.nanosec * 1e-9 if got else None
 
 
 def thermal():
