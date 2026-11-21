@@ -8,7 +8,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction, ExecuteProcess
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, EnvironmentVariable
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, EnvironmentVariable, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -25,6 +25,9 @@ def generate_launch_description():
         DeclareLaunchArgument('look_around', default_value='false'),
         DeclareLaunchArgument('depth_cloud', default_value='true',
                               description='false = no /camera/points (costmaps then use the lidar only)'),
+        DeclareLaunchArgument('cloud', default_value='slim',
+                              description="slim = depth_to_cloud (full-res obstacle points, sparse floor); "
+                                          "full = depth_image_proc 256k points (before 21 Nov 2026)"),
         DeclareLaunchArgument('rviz', default_value='true',
                               description='false for measured runs (RViz costs 50-120% CPU); open it separately to check'),
         TimerAction(period=30.0, actions=[
@@ -45,8 +48,13 @@ def generate_launch_description():
 
         TimerAction(period=5.0, actions=[
             # depth image -> /camera/points, 2nd obstacle source of both Nav2 costmaps (P1: café tabletops)
+            Node(package='semantic_mapper', executable='depth_to_cloud', output='screen',
+                 condition=IfCondition(PythonExpression([
+                     "'", LaunchConfiguration('depth_cloud'), "' == 'true' and '", LaunchConfiguration('cloud'), "' == 'slim'"])),
+                 parameters=[sim_time]),
             Node(package='depth_image_proc', executable='point_cloud_xyz_node', name='depth_to_points',
-                 condition=IfCondition(LaunchConfiguration('depth_cloud')),
+                 condition=IfCondition(PythonExpression([
+                     "'", LaunchConfiguration('depth_cloud'), "' == 'true' and '", LaunchConfiguration('cloud'), "' == 'full'"])),
                  output='screen', parameters=[sim_time],
                  remappings=[('image_rect', '/camera/depth_image'), ('camera_info', '/camera/camera_info'),
                              ('points', '/camera/points')]),

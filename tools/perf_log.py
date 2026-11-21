@@ -26,7 +26,7 @@ GROUPS = {   # column -> substring of the process command line
     'explorer': 'frontier_explorer',
     'detection': 'detection_node',
     'object_maps': 'object_map_node',
-    'cloud': 'point_cloud_xyz_node',
+    'cloud': ('point_cloud_xyz_node', 'depth_to_cloud'),
     'rviz': 'rviz2',
 }
 
@@ -74,7 +74,7 @@ def procs():
         if 'bash -c' in cmd or 'perf_log' in cmd:
             continue
         for k, pat in GROUPS.items():
-            if pat in cmd:
+            if any(q in cmd for q in ((pat,) if isinstance(pat, str) else pat)):
                 found[k].append(p)
     return found
 

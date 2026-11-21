@@ -31,7 +31,8 @@ setup(
             'prompt_test = semantic_mapper.prompt_test:main',
             'object_map_node = semantic_mapper.object_map_node:main',
             'query_map = semantic_mapper.query_map:main',
-            'evaluate_map = semantic_mapper.evaluate_map:main',                        
+            'evaluate_map = semantic_mapper.evaluate_map:main',
+            'depth_to_cloud = semantic_mapper.depth_to_cloud:main',                        
         ],
     },
 )
