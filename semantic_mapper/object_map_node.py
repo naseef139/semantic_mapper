@@ -26,6 +26,9 @@ class ObjectMapNode(Node):
         self.cross_dist = self.declare_parameter('cross_label_dist', 0.4).value  # different label: only if very close (m)
         self.min_sightings = self.declare_parameter('min_sightings', 3).value
         self.min_gap = self.declare_parameter('min_gap', 1.0).value              # seconds between counted sightings
+        # winning label must hold this share of the vote weight (P4: false objects in run22 had 0.59-0.67,
+        # real ones >= 0.73); below it the object stays a candidate and can still be confirmed later
+        self.min_share = self.declare_parameter('min_class_share', 0.7).value
         self.objects = []
         self.people_seen = 0
         self.next_id = 0
@@ -45,6 +48,15 @@ class ObjectMapNode(Node):
     def label_of(obj):
         return obj['votes'].most_common(1)[0][0]         # class vote: the label with the most weight
 
+
+    @staticmethod
+    def class_share(obj):
+        total = sum(obj['votes'].values())
+        return obj['votes'].most_common(1)[0][1] / total if total > 0 else 0.0
+
+    def is_confirmed(self, obj):
+        """Shown and saved as real: enough sightings (obj['confirmed']) and a clear class vote."""
+        return obj['confirmed'] and self.class_share(obj) >= self.min_share
 
     @staticmethod
     def text_of(obj):
@@ -109,7 +121,7 @@ class ObjectMapNode(Node):
                 p = obj['pos']
                 self.get_logger().info(
                     f'CONFIRMED #{obj["id"]}: {self.label_of(obj)} at ({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}) '
-                    f'after {obj["n"]} sightings')
+                    f'after {obj["n"]} sightings (class share {self.class_share(obj):.2f})')
         self.fuse_close()
         self.drop_people_objects()
         
@@ -155,7 +167,8 @@ class ObjectMapNode(Node):
         data = {'frame': 'map', 'objects': [
             {'id': o['id'], 'label': self.label_of(o),
              'x': round(float(o['pos'][0]), 3), 'y': round(float(o['pos'][1]), 3), 'z': round(float(o['pos'][2]), 3),
-             'sightings': o['n'], 'confirmed': o['confirmed'],
+             'sightings': o['n'], 'confirmed': self.is_confirmed(o),
+             'enough_sightings': o['confirmed'], 'class_share': round(self.class_share(o), 2),
              'text': self.text_of(o), 'texts': dict(o['texts']),
              'votes': {k: round(v, 2) for k, v in o['votes'].items()}}
             for o in self.objects]}
@@ -168,7 +181,8 @@ class ObjectMapNode(Node):
         for d in data['objects']:
             self.objects.append(dict(id=d['id'], pos=np.array([d['x'], d['y'], d['z']]),
                                      updates=d['sightings'], n=d['sightings'],
-                                     votes=Counter(d['votes']), last_t=0.0, confirmed=d['confirmed'],
+                                     votes=Counter(d['votes']), last_t=0.0,
+                                     confirmed=d.get('enough_sightings', d['confirmed']),
                                      texts=Counter(d.get('texts', {}))))
             self.next_id = max(self.next_id, d['id'])
         self.get_logger().info(f'loaded {len(self.objects)} objects from {path}')
@@ -180,8 +194,9 @@ class ObjectMapNode(Node):
         arr.markers.append(clear)
         for obj in self.objects:
             p = obj['pos']
+            ok = self.is_confirmed(obj)
             for kind in (Marker.CUBE, Marker.TEXT_VIEW_FACING):
-                if kind == Marker.TEXT_VIEW_FACING and not obj['confirmed']:
+                if kind == Marker.TEXT_VIEW_FACING and not ok:
                     continue                                # candidates get no label
                 m = Marker()
                 m.header.frame_id = 'map'
@@ -193,9 +208,9 @@ class ObjectMapNode(Node):
                 m.pose.position.x, m.pose.position.y, m.pose.position.z = float(p[0]), float(p[1]), float(p[2])
                 m.pose.orientation.w = 1.0
                 if kind == Marker.CUBE:
-                    size = 0.35 if obj['confirmed'] else 0.15
+                    size = 0.35 if ok else 0.15
                     m.scale.x = m.scale.y = m.scale.z = size
-                    if obj['confirmed']:
+                    if ok:
                         m.color.r, m.color.g, m.color.b, m.color.a = 0.1, 0.8, 0.2, 1.0    # green = confirmed
                     else:
                         m.color.r, m.color.g, m.color.b, m.color.a = 0.6, 0.6, 0.6, 0.8    # grey = candidate
