@@ -140,16 +140,21 @@ class ObjectMapNode(Node):
                 self.objects.remove(obj)
                         
     def fuse_close(self):
-        """Join stored objects of the same label that have ended up close together."""
+        """Join stored objects that have ended up close together: same label within the merge distance,
+        different labels within cross_label_dist (one thing seen as two classes, e.g. the pine pot as
+        plant + bin 0.1-0.3 m apart in runs 22-28; the joined class vote then decides the label)."""
         i = 0
         while i < len(self.objects):
             a = self.objects[i]
             j = i + 1
             while j < len(self.objects):
                 b = self.objects[j]
-                la = self.label_of(a)
-                near = np.linalg.norm(a['pos'] - b['pos']) < MERGE_DIST.get(la, self.merge_dist)
-                if la == self.label_of(b) and near:
+                la, lb = self.label_of(a), self.label_of(b)
+                d = np.linalg.norm(a['pos'] - b['pos'])
+                if (la == lb and d < MERGE_DIST.get(la, self.merge_dist)) or (la != lb and d < self.cross_dist):
+                    if b['updates'] > a['updates']:              # keep the better-seen object's id
+                        a, b = b, a
+                        self.objects[i] = a
                     w = a['updates'] + b['updates']
                     a['pos'] = (a['pos'] * a['updates'] + b['pos'] * b['updates']) / w
                     a['updates'] = w
@@ -157,7 +162,7 @@ class ObjectMapNode(Node):
                     a['votes'] += b['votes']
                     a['texts'] += b['texts']                    
                     a['confirmed'] = a['confirmed'] or b['confirmed'] or a['n'] >= self.min_sightings
-                    self.get_logger().info(f'fused #{b["id"]} into #{a["id"]} ({la})')
+                    self.get_logger().info(f'fused #{b["id"]} into #{a["id"]} ({self.label_of(a)})')
                     del self.objects[j]
                 else:
                     j += 1
